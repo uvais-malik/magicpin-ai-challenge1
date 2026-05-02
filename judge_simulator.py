@@ -39,6 +39,8 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # Which test to run by default
 TEST_SCENARIO = os.environ.get("TEST_SCENARIO", "all")
+# TEST_SCENARIO = "full_evaluation"
+
 
 # =============================================================================
 # ██████  END OF CONFIGURATION - DON'T EDIT BELOW THIS LINE ██████
@@ -49,6 +51,7 @@ import json
 import time
 import re
 import socket
+from urllib.error import HTTPError
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
@@ -530,13 +533,22 @@ Send As: {action.get('send_as', 'vera')}
 
 Score each dimension 0-10 with clear reasoning. Be STRICT."""
 
-        try:
-            print_llm("Analyzing message...")
-            response = self.llm.complete(prompt, self.SYSTEM)
-            return self._parse_response(response, action)
-        except Exception as e:
-            print_warn(f"LLM error: {e}")
-            return self._fallback_score(action)
+        for attempt in range(3):
+            try:
+                print_llm("Analyzing message...")
+                response = self.llm.complete(prompt, self.SYSTEM)
+                return self._parse_response(response, action)
+            except HTTPError as e:
+                if e.code == 429 and attempt < 2:
+                    wait_s = 8 * (attempt + 1)
+                    print_warn(f"LLM rate limited; retrying in {wait_s}s")
+                    time.sleep(wait_s)
+                    continue
+                print_warn(f"LLM error: {e}")
+                return self._fallback_score(action)
+            except Exception as e:
+                print_warn(f"LLM error: {e}")
+                return self._fallback_score(action)
 
     def _parse_response(self, response: str, action: Dict) -> ScoreResult:
         """Parse LLM JSON response."""

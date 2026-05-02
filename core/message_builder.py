@@ -58,6 +58,96 @@ def _ctr_gap_insight(merchant_analysis: dict) -> str:
     return f"CTR is already above peer ({ctr(merchant_analysis['ctr'])} vs {ctr(merchant_analysis['peer_ctr'])}), so the issue is demand volume"
 
 
+def _extract_action(body: str) -> str:
+    marker = "Action:"
+    if marker not in body:
+        return body.split(".")[-1].strip() or "take the next step"
+    action = body.split(marker, 1)[1].strip()
+    return action.rstrip(".")
+
+
+def _why_now(trigger_analysis: dict, merchant_analysis: dict) -> str:
+    payload = trigger_analysis["payload"]
+    kind = trigger_analysis["kind"]
+    if kind in {"perf_dip", "seasonal_perf_dip"}:
+        metric = humanize_label(payload.get("metric", merchant_analysis["drop_metric"]))
+        delta = payload.get("delta_pct", -merchant_analysis["drop_pct"])
+        return f"{metric} dropped {pct(abs(float(delta)) if isinstance(delta, (int, float)) else merchant_analysis['drop_pct'])} in {payload.get('window', '7d')}"
+    if kind == "perf_spike":
+        return f"{humanize_label(payload.get('metric', 'calls'))} rose {pct(payload.get('delta_pct', merchant_analysis['spike_pct']), signed=True)} in {payload.get('window', '7d')}"
+    if kind == "regulation_change":
+        return f"compliance deadline {payload.get('deadline_iso', 'is upcoming')} is active"
+    if kind == "research_digest":
+        return f"new research digest item is available now"
+    if kind == "renewal_due":
+        return f"plan renewal is due in {payload.get('days_remaining', 0)} days"
+    if kind == "festival_upcoming":
+        return f"{payload.get('festival', 'festival')} demand window opens in {payload.get('days_until', 0)} days"
+    if kind == "ipl_match_today":
+        return f"{payload.get('match', 'match')} is today near {payload.get('venue', 'your area')}"
+    if kind == "review_theme_emerged":
+        return f"{payload.get('occurrences_30d', 0)} reviews mention {humanize_label(payload.get('theme', 'a service issue'))}"
+    if kind == "active_planning_intent":
+        return f"merchant already asked to proceed on {humanize_label(payload.get('intent_topic', 'the plan'))}"
+    if kind == "winback_eligible":
+        return f"{payload.get('days_since_expiry', 0)} days since expiry and {payload.get('lapsed_customers_added_since_expiry', 0)} lapsed customers added"
+    if kind == "dormant_with_vera":
+        return f"{payload.get('days_since_last_merchant_message', 0)} days since last merchant message"
+    if kind == "supply_alert":
+        return f"{humanize_label(payload.get('molecule', 'medicine'))} batch alert has urgency {trigger_analysis['urgency']}/5"
+    if kind == "category_seasonal":
+        return f"seasonal trend shifted: {_format_list(payload.get('trends', []), 2)}"
+    if kind == "gbp_unverified":
+        return f"Google profile is unverified with expected {pct(payload.get('estimated_uplift_pct', 0))} visibility uplift"
+    if kind == "competitor_opened":
+        return f"{payload.get('competitor_name', 'competitor')} opened {payload.get('distance_km', '?')} km away"
+    if kind == "cde_opportunity":
+        return f"CDE item has {payload.get('credits', 0)} credits before expiry"
+    return f"{humanize_label(kind)} trigger is active with urgency {trigger_analysis['urgency']}/5"
+
+
+def _category_reason(category_profile: dict, trigger_analysis: dict) -> str:
+    slug = category_profile["slug"]
+    if slug == "dentists":
+        return "clinical, patient-safe copy with recall/compliance language fits this dental context"
+    if slug == "restaurants":
+        return "operator-style copy tied to covers, orders, and a named combo is easier to act on"
+    if slug == "salons":
+        return "service-led copy with a clear booking angle fits salon walk-in and appointment behavior"
+    if slug == "gyms":
+        return "coach-like copy tied to trial classes, members, and sessions fits fitness decisions"
+    if slug == "pharmacies":
+        return "trust-first copy tied to stock, refill, batch, and compliance protects pharmacy credibility"
+    return "specific service-price copy is easier to execute than a generic promotion"
+
+
+def _primary_signal(merchant: dict, category_profile: dict, merchant_analysis: dict) -> str:
+    perf = merchant.get("performance", {})
+    active = [clean_text(o.get("title")) for o in merchant.get("offers", []) if o.get("status") == "active"]
+    offer_text = f"; active offer: {active[0]}" if active else "; no active offer"
+    return (
+        f"{perf.get('views', 0)} views, {perf.get('calls', 0)} calls, CTR {ctr(perf.get('ctr'))} "
+        f"vs peer CTR {ctr(category_profile.get('peer_stats', {}).get('avg_ctr'))}"
+        f"{offer_text}"
+    )
+
+
+def strengthen_message(body: str, cta: str, category_profile: dict, merchant: dict, trigger: dict, customer_profile: dict, merchant_analysis: dict, trigger_analysis: dict, decision: dict) -> str:
+    if customer_profile.get("present"):
+        return f"{body} Reply {cta}."
+
+    greeting = _salutation(category_profile, merchant, customer_profile)
+    action = _extract_action(body)
+    locality = _location(merchant)
+    return (
+        f"{greeting}, Why now: {_why_now(trigger_analysis, merchant_analysis)}. "
+        f"Fact: {_primary_signal(merchant, category_profile, merchant_analysis)} in {locality}. "
+        f"Insight: {_category_reason(category_profile, trigger_analysis)}; strategy is {humanize_label(decision['angle']).lower()}. "
+        f"Action: {action}. "
+        f"Reply {cta} and I will set it up."
+    )
+
+
 def build_message(category_profile: dict, merchant: dict, trigger: dict, customer_profile: dict, merchant_analysis: dict, trigger_analysis: dict, decision: dict) -> str:
     greeting = _salutation(category_profile, merchant, customer_profile)
     payload = trigger_analysis["payload"]
