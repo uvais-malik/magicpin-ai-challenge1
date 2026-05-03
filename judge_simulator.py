@@ -45,7 +45,7 @@ BOT_URL = os.environ.get("BOT_URL", "http://localhost:8080")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
 
 # Your API key. Do not hardcode secrets here; set LLM_API_KEY in your shell or .env.
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_API_KEY = os.environ.get("LLM_API_KEY")
 
 # Model to use (leave empty for default, or specify like "gpt-4o", "claude-3-5-sonnet-20241022", etc.)
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-2.5-flash")
@@ -227,7 +227,8 @@ class AnthropicProvider(LLMProvider):
 
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = ""):
-        self.api_key = api_key
+        self.api_keys = [key.strip() for key in re.split(r"[,;]", api_key) if key.strip()]
+        self.api_key_index = 0
         self.model = model or "gemini-1.5-flash"
 
     def name(self) -> str:
@@ -237,14 +238,28 @@ class GeminiProvider(LLMProvider):
         full_prompt = f"{system}\n\n{prompt}" if system else prompt
         body = json.dumps({
             "contents": [{"parts": [{"text": full_prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1500}
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096, "responseMimeType": "application/json"}
         }).encode("utf-8")
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-        req = urlrequest.Request(url, data=body, headers={"Content-Type": "application/json"})
-        resp = urlrequest.urlopen(req, timeout=TIMEOUT_LLM)
-        data = json.loads(resp.read().decode("utf-8"))
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        last_error = None
+        for offset in range(len(self.api_keys)):
+            idx = (self.api_key_index + offset) % len(self.api_keys)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_keys[idx]}"
+            req = urlrequest.Request(url, data=body, headers={"Content-Type": "application/json"})
+            try:
+                resp = urlrequest.urlopen(req, timeout=TIMEOUT_LLM)
+                self.api_key_index = idx
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code == 429 and len(self.api_keys) > 1:
+                    self.api_key_index = (idx + 1) % len(self.api_keys)
+                    continue
+                raise
+        if last_error:
+            raise last_error
+        raise RuntimeError("No Gemini API keys configured")
 
 
 class DeepSeekProvider(LLMProvider):
@@ -495,10 +510,10 @@ PENALTIES:
 - Fabricating data not in context: -2
 - Exposing internal jargon to merchant: -1
 
-RESPOND ONLY WITH THIS EXACT JSON FORMAT:
+Keep every reason under 12 words. RESPOND ONLY WITH THIS EXACT JSON FORMAT:
 {
   "specificity": <0-10>,
-  "specificity_reason": "<why this score, 1-2 sentences>",
+  "specificity_reason": "<why this score>",
   "category_fit": <0-10>,
   "category_fit_reason": "<why this score>",
   "merchant_fit": <0-10>,
@@ -546,7 +561,7 @@ Body ({len(body)} chars): "{body}"
 CTA: {action.get('cta', 'none')}
 Send As: {action.get('send_as', 'vera')}
 
-Score each dimension 0-10 with clear reasoning. Be STRICT."""
+Score each dimension 0-10 with compact reasoning. Keep JSON valid and complete."""
 
         for attempt in range(3):
             try:
@@ -567,29 +582,94 @@ Score each dimension 0-10 with clear reasoning. Be STRICT."""
 
     def _parse_response(self, response: str, action: Dict) -> ScoreResult:
         """Parse LLM JSON response."""
-        match = re.search(r'\{[\s\S]*\}', response)
-        if not match:
-            return self._fallback_score(action)
-
         try:
-            data = json.loads(match.group())
+            data = self._extract_score_json(response)
+            if "scores" in data and isinstance(data["scores"], dict):
+                data = {**data["scores"], **{k: v for k, v in data.items() if k != "scores"}}
+            required_scores = ("specificity", "category_fit", "merchant_fit", "decision_quality", "engagement_compulsion")
+            if not any(key in data for key in ("decision_quality", "trigger_relevance", "relevance")):
+                raise ValueError("incomplete scoring JSON: missing decision score")
+            if not any(key in data for key in ("engagement_compulsion", "engagement", "compulsion")):
+                raise ValueError("incomplete scoring JSON: missing engagement score")
             result = ScoreResult(
-                specificity=min(10, max(0, int(data.get("specificity", 5)))),
-                specificity_reason=data.get("specificity_reason", ""),
-                category_fit=min(10, max(0, int(data.get("category_fit", 5)))),
-                category_fit_reason=data.get("category_fit_reason", ""),
-                merchant_fit=min(10, max(0, int(data.get("merchant_fit", 5)))),
-                merchant_fit_reason=data.get("merchant_fit_reason", ""),
-                decision_quality=min(10, max(0, int(data.get("decision_quality", data.get("trigger_relevance", 5))))),
-                decision_quality_reason=data.get("decision_quality_reason", data.get("trigger_relevance_reason", "")),
-                engagement_compulsion=min(10, max(0, int(data.get("engagement_compulsion", 5)))),
-                engagement_reason=data.get("engagement_reason", ""),
+                specificity=self._score_value(data, "specificity"),
+                specificity_reason=self._reason_value(data, "specificity_reason", "specificity"),
+                category_fit=self._score_value(data, "category_fit", "category"),
+                category_fit_reason=self._reason_value(data, "category_fit_reason", "category_reason", "category_fit"),
+                merchant_fit=self._score_value(data, "merchant_fit", "merchant"),
+                merchant_fit_reason=self._reason_value(data, "merchant_fit_reason", "merchant_reason", "merchant_fit"),
+                decision_quality=self._score_value(data, "decision_quality", "trigger_relevance", "relevance"),
+                decision_quality_reason=self._reason_value(data, "decision_quality_reason", "trigger_relevance_reason", "relevance_reason", "decision_quality"),
+                engagement_compulsion=self._score_value(data, "engagement_compulsion", "engagement", "compulsion"),
+                engagement_reason=self._reason_value(data, "engagement_reason", "engagement_compulsion_reason", "engagement"),
                 hint=data.get("hint", "")
             )
             return result
         except Exception as e:
             print_warn(f"Parse error: {e}")
             return self._fallback_score(action)
+
+    @staticmethod
+    def _extract_score_json(response: str) -> Dict:
+        text = response.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"\s*```$", "", text).strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        candidates = re.findall(r"\{[\s\S]*?\}", response)
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        repaired = LLMScorer._repair_partial_json(response)
+        if repaired:
+            return repaired
+        raise ValueError("no JSON object found")
+
+    @staticmethod
+    def _repair_partial_json(response: str) -> Dict:
+        text = response.strip()
+        start = text.find("{")
+        if start < 0:
+            return {}
+        text = text[start:]
+        pairs = re.findall(r'"([^"]+)"\s*:\s*(?:"([^"]*)"|(-?\d+))\s*,?', text)
+        data: Dict[str, Any] = {}
+        for key, string_value, number_value in pairs:
+            data[key] = int(number_value) if number_value else string_value
+        return data
+
+    @staticmethod
+    def _score_value(data: Dict, *keys: str) -> int:
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, dict):
+                value = value.get("score", value.get("value", 5))
+            if value is not None:
+                return min(10, max(0, int(value)))
+        return 5
+
+    @staticmethod
+    def _reason_value(data: Dict, *keys: str) -> str:
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, dict):
+                value = value.get("reason", value.get("why", ""))
+                if value:
+                    return str(value)
+            elif key.endswith("_reason") and value:
+                return str(value)
+            if isinstance(value, str) and key.endswith("_reason"):
+                return value
+        return ""
 
     def _fallback_score(self, action: Dict) -> ScoreResult:
         """Basic fallback scoring."""
@@ -967,17 +1047,27 @@ def main():
 
     # Test LLM connection
     print_info("Testing LLM connection...")
-    try:
-        test_response = llm.complete("Say 'ready' if you can hear me.", "You are a test assistant.")
-        if test_response:
-            print_success("LLM connected successfully")
-        else:
+    for attempt in range(3):
+        try:
+            test_response = llm.complete("Say 'ready' if you can hear me.", "You are a test assistant.")
+            if test_response:
+                print_success("LLM connected successfully")
+                break
             print_fail("LLM returned empty response")
             sys.exit(1)
-    except Exception as e:
-        print_fail(f"LLM connection failed: {e}")
-        print_info("Check your API key and internet connection")
-        sys.exit(1)
+        except HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                wait_s = 20 * (attempt + 1)
+                print_warn(f"LLM rate limited during connection test; retrying in {wait_s}s")
+                time.sleep(wait_s)
+                continue
+            print_fail(f"LLM connection failed: {e}")
+            print_info("Check your API key/quota and internet connection")
+            sys.exit(1)
+        except Exception as e:
+            print_fail(f"LLM connection failed: {e}")
+            print_info("Check your API key and internet connection")
+            sys.exit(1)
 
     # Run the judge
     judge = JudgeSimulator(llm)
