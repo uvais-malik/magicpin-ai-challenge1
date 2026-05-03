@@ -33,6 +33,5 @@ def adapt_customer(customer: dict | None, merchant: dict | None, category: dict 
         "consent": has_customer_consent(customer),
         "relationship_facts": facts,
         "state": customer.get("state", "unknown"),
-        "preferred_time": customer.get("preferences", {}).get("preferred_time"),
+        "preferred_time": customer.get("preferences", {}).get("preferred_time") or customer.get("preferences", {}).get("preferred_slots"),
     }
-

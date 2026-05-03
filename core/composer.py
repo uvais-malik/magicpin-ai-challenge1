@@ -5,6 +5,7 @@ from __future__ import annotations
 from config.constants import SEND_AS_MERCHANT, SEND_AS_VERA
 from core.cta_engine import choose_cta
 from core.decision_engine import decide_strategy
+from core.llm_client import rewrite_message_if_enabled
 from core.message_builder import build_message, strengthen_message
 from core.rationale_engine import build_rationale
 from core.suppression import make_suppression_key
@@ -55,4 +56,15 @@ def compose(category: dict, merchant: dict, trigger: dict, customer: dict | None
         "suppression_key": make_suppression_key(merchant or {}, trigger or {}),
         "rationale": build_rationale(trigger_analysis, merchant_analysis, decision),
     }
+    message = rewrite_message_if_enabled(
+        message,
+        {
+            "category_profile": category_profile,
+            "merchant_analysis": merchant_analysis,
+            "trigger_analysis": trigger_analysis,
+            "customer_profile": customer_profile,
+            "merchant": merchant or {},
+            "trigger": trigger or {},
+        },
+    )
     return validate_message(message)

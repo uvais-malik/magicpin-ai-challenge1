@@ -31,7 +31,7 @@ TRIGGER_CLASSIFICATION = {
     "category_seasonal": ("seasonal", "opportunity"),
     "gbp_unverified": ("profile_verification", "problem"),
     "cde_opportunity": ("education", "opportunity"),
-    "chronic_refill_due": ("recall", "problem"),
+    "chronic_refill_due": ("refill", "problem"),
 }
 
 CATEGORY_DEFAULTS = {
@@ -81,6 +81,7 @@ CTA_BY_INTENT = {
         "renewal": "Renew plan",
         "reactivation": "Restart campaign",
         "recall": "Book slot",
+        "refill": "Confirm refill",
         "compliance": "Show checklist",
         "supply_alert": "Pull batches",
         "profile_verification": "Verify profile",

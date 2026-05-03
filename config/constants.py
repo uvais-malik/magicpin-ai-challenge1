@@ -1,6 +1,6 @@
 """Project-wide constants for the Vera deterministic engine."""
 
-BOT_VERSION = "1.0.0"
+BOT_VERSION = "1.1.0"
 TEAM_NAME = "Vera Deterministic Systems"
 DEFAULT_PORT = 8080
 
@@ -16,4 +16,3 @@ STRATEGY_REACTIVATION = "REACTIVATION"
 TIME_BUCKET_FALLBACK = "current"
 
 MAX_ACTIONS_PER_TICK = 5
-

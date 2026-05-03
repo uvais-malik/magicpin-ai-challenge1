@@ -30,10 +30,11 @@ Cloud hosts such as Render or Railway can provide the runtime port through
 The code follows the requested multi-stage pipeline:
 
 1. `intelligence/*` analyzes category, merchant, trigger, and customer context.
-2. `core/decision_engine.py` selects a deterministic strategy.
-3. `core/message_builder.py` builds HOOK -> FACT -> INSIGHT -> ACTION copy.
-4. `core/cta_engine.py`, `core/suppression.py`, and `core/rationale_engine.py` complete the response contract.
-5. `app/router.py` stores pushed context and dispatches proactive actions.
+2. `core/decision_engine.py` selects a deterministic strategy and compulsion lever.
+3. `core/message_builder.py` builds trigger-specific HOOK -> FACT -> INSIGHT -> ACTION copy.
+4. `core/llm_client.py` can optionally rewrite copy when `LLM_COMPOSE=1`; fallback is always deterministic.
+5. `core/cta_engine.py`, `core/suppression.py`, and `core/rationale_engine.py` complete the response contract.
+6. `app/router.py` stores pushed context, dispatches proactive actions, and routes replies through `core/conversation_handlers.py`.
 
 ## Local Checks
 

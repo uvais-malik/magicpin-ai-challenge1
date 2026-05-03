@@ -16,7 +16,7 @@ def decide_strategy(category_profile: dict, merchant_analysis: dict, trigger_ana
     trigger_type = trigger_analysis["type"]
     intent = trigger_analysis["intent"]
 
-    if trigger_type in {"recall", "reactivation", "renewal"} or kind in {"winback_eligible", "customer_lapsed_hard", "customer_lapsed_soft", "dormant_with_vera"}:
+    if trigger_type in {"recall", "refill", "reactivation", "renewal"} or kind in {"winback_eligible", "customer_lapsed_hard", "customer_lapsed_soft", "dormant_with_vera"}:
         angle = STRATEGY_REACTIVATION
         goal = "recover a known customer or merchant relationship with one low-friction action"
     elif trigger_type == "planning":
@@ -38,6 +38,25 @@ def decide_strategy(category_profile: dict, merchant_analysis: dict, trigger_ana
         angle = STRATEGY_CURIOSITY
         goal = "surface a specific fact worth replying to"
 
+    if trigger_analysis["kind"] == "research_digest":
+        levers = ["curiosity", "reciprocity", "source credibility"]
+    elif trigger_analysis["kind"] in {"perf_dip", "seasonal_perf_dip"}:
+        levers = ["loss aversion", "social proof", "effort externalization"]
+    elif trigger_analysis["kind"] == "renewal_due":
+        levers = ["loss aversion", "binary commitment"]
+    elif trigger_analysis["type"] in {"recall", "refill"}:
+        levers = ["effort externalization", "specific slot choice"]
+    elif trigger_analysis["kind"] == "competitor_opened":
+        levers = ["loss aversion", "curiosity", "competitive proof"]
+    elif trigger_analysis["kind"] == "curious_ask_due":
+        levers = ["pure curiosity", "low-stakes question"]
+    elif trigger_analysis["kind"] in {"supply_alert", "regulation_change", "gbp_unverified"}:
+        levers = ["urgency", "trust protection", "checklist"]
+    elif trigger_analysis["kind"] == "active_planning_intent":
+        levers = ["effort externalization", "ready draft"]
+    else:
+        levers = [angle.lower().replace("_", " "), "low-friction CTA"]
+
     key_facts = []
     if merchant_analysis["drop_pct"]:
         key_facts.append(f"{merchant_analysis['drop_metric']} down {int(merchant_analysis['drop_pct'] * 100)}%")
@@ -58,4 +77,5 @@ def decide_strategy(category_profile: dict, merchant_analysis: dict, trigger_ana
         "key_facts": key_facts[:5],
         "tone": category_profile["tone"],
         "severity": merchant_analysis["severity"],
+        "levers": levers,
     }

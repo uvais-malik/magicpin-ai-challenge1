@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config.constants import BOT_VERSION, TEAM_NAME
+from core.conversation_handlers import ConversationHandler
 from core.dispatcher import Dispatcher
 
 
@@ -20,6 +21,7 @@ class ContextStore:
         self.versions: dict[tuple[str, str], int] = {}
         self.sent_suppression_keys: set[str] = set()
         self.conversations: dict[str, dict] = {}
+        self.auto_reply_counts: dict[str, int] = {}
         self._conversation_seq = 0
 
     def counts(self) -> dict[str, int]:
@@ -32,7 +34,22 @@ class ContextStore:
 
     def next_conversation_id(self, merchant_id: str, trigger_id: str) -> str:
         self._conversation_seq += 1
-        return f"conv_{self._conversation_seq:04d}_{merchant_id}_{trigger_id}"
+        short_merchant = str(merchant_id).replace("m_", "")[:24]
+        short_trigger = str(trigger_id).replace("trg_", "")[:32]
+        return f"conv_{short_merchant}_{short_trigger}_{self._conversation_seq:04d}"
+
+    def clear_trigger_suppression(self, context_id: str, payload: dict) -> None:
+        explicit = payload.get("suppression_key")
+        if explicit:
+            self.sent_suppression_keys.discard(explicit)
+        merchant_id = payload.get("merchant_id", "")
+        possible = [
+            key
+            for key in self.sent_suppression_keys
+            if context_id in key or (merchant_id and key.startswith(f"{merchant_id}:"))
+        ]
+        for key in possible:
+            self.sent_suppression_keys.discard(key)
 
 
 STORE = ContextStore()
@@ -80,17 +97,23 @@ def handle_context(body: dict[str, Any]) -> tuple[int, dict]:
     current = STORE.versions.get((scope, context_id), 0)
     if version_int < current:
         return 409, {"accepted": False, "reason": "stale_version", "current_version": current}
-    if version_int == current:
-        return 200, {"accepted": True, "ack_id": f"ack_{scope}_{context_id}_{version_int}", "stored_at": _utc_now()}
-
     target = {
         "category": STORE.categories,
         "merchant": STORE.merchants,
         "customer": STORE.customers,
         "trigger": STORE.triggers,
     }[scope]
+
+    if version_int == current:
+        target[context_id] = payload
+        if scope == "trigger":
+            STORE.clear_trigger_suppression(context_id, payload)
+        return 200, {"accepted": True, "ack_id": f"ack_{scope}_{context_id}_{version_int}", "stored_at": _utc_now()}
+
     target[context_id] = payload
     STORE.versions[(scope, context_id)] = version_int
+    if scope == "trigger":
+        STORE.clear_trigger_suppression(context_id, payload)
     return 200, {"accepted": True, "ack_id": f"ack_{scope}_{context_id}_{version_int}", "stored_at": _utc_now()}
 
 
@@ -101,44 +124,5 @@ def handle_tick(body: dict[str, Any]) -> tuple[int, dict]:
     return 200, {"actions": actions}
 
 
-AUTO_REPLY_MARKERS = (
-    "thank you for contacting",
-    "will respond shortly",
-    "away from whatsapp",
-    "business hours",
-    "auto-reply",
-    "automated",
-)
-
-HOSTILE_MARKERS = ("stop", "spam", "useless", "dont message", "don't message", "unsubscribe")
-COMMITMENT_MARKERS = ("do it", "lets do", "let's do", "yes", "ok", "whats next", "what's next", "proceed", "confirm")
-
-
 def handle_reply(body: dict[str, Any]) -> tuple[int, dict]:
-    message = str(body.get("message", "")).strip()
-    lowered = message.lower()
-
-    if any(marker in lowered for marker in HOSTILE_MARKERS):
-        return 200, {"action": "end", "rationale": "User asked to stop or called the message spam; end immediately."}
-
-    if any(marker in lowered for marker in AUTO_REPLY_MARKERS):
-        return 200, {"action": "end", "rationale": "Detected WhatsApp Business canned auto-reply; no further merchant turn should be spent."}
-
-    if any(marker in lowered for marker in COMMITMENT_MARKERS):
-        return 200, {
-            "action": "send",
-            "body": "Done - moving to execution. Here is the next step: I will draft the offer/post with price, audience, and 7-day run dates; reply CONFIRM and I will proceed.",
-            "cta": "Confirm",
-            "rationale": "Merchant committed, so switch from qualification to action mode.",
-        }
-
-    if "later" in lowered or "busy" in lowered:
-        return 200, {"action": "wait", "wait_seconds": 1800, "rationale": "Merchant asked for time; back off for 30 minutes."}
-
-    return 200, {
-        "action": "send",
-        "body": "Got it. I will keep this practical: one specific offer, one post, and one measurable target for the next 7 days. Reply YES to proceed.",
-        "cta": "Yes",
-        "rationale": "Continue with a low-friction action-oriented next step.",
-    }
-
+    return ConversationHandler(STORE).handle(body)
