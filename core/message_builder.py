@@ -132,6 +132,85 @@ def _primary_signal(merchant: dict, category_profile: dict, merchant_analysis: d
     )
 
 
+def _trigger_fact(category_profile: dict, merchant: dict, trigger: dict, trigger_analysis: dict, merchant_analysis: dict) -> str:
+    payload = trigger_analysis["payload"]
+    kind = trigger_analysis["kind"]
+
+    if kind in {"research_digest", "category_research_digest_release"}:
+        item = find_digest_item(category_profile, trigger)
+        cohort = merchant.get("customer_aggregate", {}).get("high_risk_adult_count") or merchant.get("customer_aggregate", {}).get("total_unique_ytd", 0)
+        return (
+            f"{clean_text(item.get('source', 'category digest'))}: {clean_text(item.get('title', 'new research'))}; "
+            f"sample size {item.get('trial_n', payload.get('trial_n', 1))}; relevant patient base {cohort}"
+        )
+    if kind == "regulation_change":
+        item = find_digest_item(category_profile, trigger)
+        return (
+            f"{clean_text(item.get('title', 'new compliance item'))}; deadline {payload.get('deadline_iso', 'upcoming')}; "
+            f"source {clean_text(item.get('source', 'category authority'))}"
+        )
+    if kind in {"perf_dip", "seasonal_perf_dip"}:
+        metric = humanize_label(payload.get("metric", merchant_analysis["drop_metric"]))
+        delta = payload.get("delta_pct", -merchant_analysis["drop_pct"])
+        baseline = payload.get("vs_baseline")
+        base = f"{metric} dropped {pct(abs(float(delta)) if isinstance(delta, (int, float)) else merchant_analysis['drop_pct'])} in {payload.get('window', '7d')}"
+        return f"{base} vs baseline {baseline}" if baseline is not None else base
+    if kind == "perf_spike":
+        metric = humanize_label(payload.get("metric", merchant_analysis["spike_metric"]))
+        return f"{metric} rose {pct(payload.get('delta_pct', merchant_analysis['spike_pct']), signed=True)} in {payload.get('window', '7d')} vs baseline {payload.get('vs_baseline', 'current baseline')}"
+    if kind == "milestone_reached":
+        return f"{humanize_label(payload.get('metric', 'metric'))} is {payload.get('value_now', 0)}; milestone target is {payload.get('milestone_value', 0)}"
+    if kind == "renewal_due":
+        amount = f" at {money(payload.get('renewal_amount'))}" if payload.get("renewal_amount") else ""
+        return f"{payload.get('plan', 'plan')} renewal due in {payload.get('days_remaining', 0)} days{amount}"
+    if kind == "festival_upcoming":
+        return f"{payload.get('festival', 'festival')} is in {payload.get('days_until', 0)} days; date {payload.get('date', 'listed')}"
+    if kind == "ipl_match_today":
+        return f"{payload.get('match', 'match')} at {payload.get('venue', 'local venue')}; match time {payload.get('match_time_iso', 'today')}"
+    if kind == "review_theme_emerged":
+        return f"{payload.get('occurrences_30d', 0)} reviews in 30d mention {humanize_label(payload.get('theme', 'service issue'))}; quote: {clean_text(payload.get('common_quote', ''))}"
+    if kind == "active_planning_intent":
+        return f"merchant asked: {clean_text(payload.get('merchant_last_message', 'proceed'))}; topic {humanize_label(payload.get('intent_topic', 'campaign'))}"
+    if kind == "winback_eligible":
+        return f"{payload.get('days_since_expiry', 0)} days since expiry; {payload.get('lapsed_customers_added_since_expiry', 0)} lapsed customers added; performance dip {pct(payload.get('perf_dip_pct', 0))}"
+    if kind == "dormant_with_vera":
+        return f"{payload.get('days_since_last_merchant_message', 0)} days since last merchant message; last topic {humanize_label(payload.get('last_topic', 'previous campaign'))}"
+    if kind == "supply_alert":
+        return f"{humanize_label(payload.get('molecule', 'medicine'))} batches {_format_list(payload.get('affected_batches', []), 3)} from {clean_text(payload.get('manufacturer', 'manufacturer'))}"
+    if kind == "category_seasonal":
+        return f"seasonal trends: {_format_list(payload.get('trends', []), 4)}"
+    if kind == "gbp_unverified":
+        return f"profile verified={payload.get('verified', False)}; path {humanize_label(payload.get('verification_path', 'verification'))}; expected uplift {pct(payload.get('estimated_uplift_pct', 0))}"
+    if kind == "competitor_opened":
+        return f"{clean_text(payload.get('competitor_name', 'competitor'))} opened {payload.get('distance_km', '?')} km away; their offer {clean_text(payload.get('their_offer', 'not listed'))}"
+    if kind == "cde_opportunity":
+        item = find_digest_item(category_profile, {"payload": {"top_item_id": payload.get("digest_item_id")}})
+        return f"{clean_text(item.get('title', 'CDE update'))}; {payload.get('credits', 0)} credits; fee {humanize_label(payload.get('fee', 'listed'))}"
+    if kind == "curious_ask_due":
+        trend = (category_profile.get("trend_signals") or [{}])[0]
+        return f"{clean_text(trend.get('query', category_profile['display_name']))} trend is {pct(trend.get('delta_yoy', 0), signed=True)} YoY"
+    return clean_text(payload) if payload else f"{humanize_label(kind)} is active"
+
+
+def _why_it_will_work(category_profile: dict, trigger_analysis: dict, merchant_analysis: dict) -> str:
+    kind = trigger_analysis["kind"]
+    if kind in {"perf_dip", "seasonal_perf_dip", "renewal_due", "winback_eligible", "dormant_with_vera"}:
+        return f"{_ctr_gap_insight(merchant_analysis)}, and a concrete service-price action gives the merchant one reversible fix"
+    if kind in {"perf_spike", "milestone_reached", "festival_upcoming", "ipl_match_today"}:
+        return "demand is already warm, so a named offer or combo reduces effort and captures the short window"
+    if kind in {"research_digest", "cde_opportunity"}:
+        return "a source-cited professional update creates curiosity without sounding like a discount blast"
+    if kind in {"regulation_change", "supply_alert", "gbp_unverified"}:
+        return "trust and compliance are the decision levers, so the safest action is a checklist or verification step"
+    if kind == "review_theme_emerged":
+        return "replying to the exact complaint protects conversion before spending on new traffic"
+    if kind == "active_planning_intent":
+        return "the merchant has already shown intent, so execution beats another qualifying question"
+    if kind == "competitor_opened":
+        return "matching the competitor with proof plus a service-price post avoids a blind price war"
+    return _category_reason(category_profile, trigger_analysis)
+
+
 def strengthen_message(body: str, cta: str, category_profile: dict, merchant: dict, trigger: dict, customer_profile: dict, merchant_analysis: dict, trigger_analysis: dict, decision: dict) -> str:
     if customer_profile.get("present"):
         return f"{body} Reply {cta}."
@@ -141,8 +220,9 @@ def strengthen_message(body: str, cta: str, category_profile: dict, merchant: di
     locality = _location(merchant)
     return (
         f"{greeting}, Why now: {_why_now(trigger_analysis, merchant_analysis)}. "
-        f"Fact: {_primary_signal(merchant, category_profile, merchant_analysis)} in {locality}. "
-        f"Insight: {_category_reason(category_profile, trigger_analysis)}; strategy is {humanize_label(decision['angle']).lower()}. "
+        f"Fact: {_trigger_fact(category_profile, merchant, trigger, trigger_analysis, merchant_analysis)}; "
+        f"{_primary_signal(merchant, category_profile, merchant_analysis)} in {locality}. "
+        f"Insight: {_category_reason(category_profile, trigger_analysis)}. Why it works: {_why_it_will_work(category_profile, trigger_analysis, merchant_analysis)}. "
         f"Action: {action}. "
         f"Reply {cta} and I will set it up."
     )

@@ -18,6 +18,22 @@ Author: magicpin AI Challenge Team
 
 import os
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Load simple KEY=VALUE pairs for local runs without committing secrets."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as env_file:
+        for line in env_file:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 # =============================================================================
 # ██████  CONFIGURATION - EDIT THIS SECTION ██████
 # =============================================================================
@@ -39,7 +55,6 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # Which test to run by default
 TEST_SCENARIO = os.environ.get("TEST_SCENARIO", "all")
-# TEST_SCENARIO = "full_evaluation"
 
 
 # =============================================================================
