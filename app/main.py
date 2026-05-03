@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 from app.router import handle_context, handle_healthz, handle_metadata, handle_reply, handle_tick
-from config.constants import DEFAULT_PORT
+from config.constants import BOT_VERSION, DEFAULT_PORT
 
 
 class VeraRequestHandler(BaseHTTPRequestHandler):
@@ -31,6 +31,15 @@ class VeraRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         routes: dict[str, Callable[[], tuple[int, dict]]] = {
+            "/": lambda: (
+                200,
+                {
+                    "status": "ok",
+                    "message": "This is the Vera base route.",
+                    "version": BOT_VERSION,
+                    "deployment_marker": "base-route-enabled",
+                },
+            ),
             "/v1/healthz": handle_healthz,
             "/v1/metadata": handle_metadata,
         }
